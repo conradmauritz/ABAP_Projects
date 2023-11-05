@@ -1,0 +1,414 @@
+*&---------------------------------------------------------------------*
+*& Report  ZCFPERFCHECK
+*&
+*&---------------------------------------------------------------------*
+*& Description:
+*&   Extracts ABAP code, code inspector analysis for extracted ABAP code,
+*&    background jobs, and ST10 output
+*&
+*& Technical description:
+*&
+*& More Information:
+*&
+*&---------------------------------------------------------------------*
+*& Change log:
+*& Date       Author        Action
+*& 3.11.2023  DEVELOPER     Initial program
+*&
+*&---------------------------------------------------------------------*
+
+REPORT zcfperfcheck.
+
+
+" TO DO:
+" Implement error handling
+
+
+*----------------------------------*
+" DECLERATION SECTION
+
+*----------------------------------*
+" CONSTANTS
+
+CONSTANTS:
+  gc_kpi_code_inspector_programs TYPE string  VALUE 'ZCF%',
+  gc_kpi_bgd_job_limit_in_sec    TYPE i       VALUE 0, " Set to desired threshold in seconds
+  gc_output_download_path        TYPE string  VALUE 'C:\zcfperfcheck_output\', " Specify download path
+  gc_output_file_extension       TYPE string  VALUE '.txt',
+  gc_download_source_code        TYPE string  VALUE 'yes', " yes: download source code | no: do not download source code
+  gc_output_file_name            TYPE string  VALUE 'code_ci_bgd_st10_',
+  gc_field_separator             TYPE c       VALUE ';'.
+
+
+*----------------------------------*
+" TYPES
+
+TYPES:
+  tt_output_format TYPE STANDARD TABLE OF string.
+
+
+*----------------------------------*
+" DATA OBJECTS
+
+DATA:
+  gt_ci_final_list TYPE scit_alvlist.
+
+TYPES:
+  tt_st10_data  TYPE STANDARD TABLE OF abaplist.
+
+TYPES:
+  tt_char1024 TYPE STANDARD TABLE OF char1024.
+
+DATA:
+  gt_tbtco_output      TYPE tt_output_format,
+  gt_st10_text_content TYPE tt_char1024.
+
+
+*----------------------------------*
+" MAIN LOGIC
+
+" Utilize code inspector functionality to analyze
+" all z programs and adjust content to be ready
+" for useful output for further analysis
+PERFORM kpi_code_inspector
+  USING
+    gc_kpi_code_inspector_programs
+    gc_output_download_path
+    gc_download_source_code
+    gc_output_file_extension
+    gc_output_file_name
+  CHANGING
+    gt_ci_final_list.
+
+" Extract long running job runtime information
+" based on pre-determined parameters and
+" ensure that the program names are also retrieved
+PERFORM kpi_bgd_jobs
+  USING
+    gc_kpi_bgd_job_limit_in_sec
+    gc_kpi_code_inspector_programs
+    gc_field_separator
+  CHANGING
+    gt_tbtco_output.
+
+" Determine which tables have an abnormally high amount
+" of utilization and using SE11 functionality retrieve
+" a list of the programs that are using those tables
+PERFORM kpi_st10
+  CHANGING gt_st10_text_content.
+
+" Place all of the retrieved content into a useful
+" structure so that the content can be easily analyzed
+PERFORM output
+  USING
+    gt_ci_final_list
+    gt_tbtco_output
+    gc_output_download_path
+    gc_output_file_extension
+    gt_st10_text_content
+    gc_output_file_name.
+
+
+*----------------------------------*
+" SUBROUTINES
+
+FORM kpi_code_inspector
+  USING
+    ic_kpi_code_inspector_programs TYPE string
+    ic_output_download_path        TYPE string
+    ic_download_source_code        TYPE string
+    ic_output_file_extension       TYPE string
+    ic_output_file_name            TYPE string
+    CHANGING
+    et_ci_final_list               TYPE scit_alvlist.
+
+  TYPES:
+    BEGIN OF ts_z_programs,
+      progname TYPE progname,
+    END OF ts_z_programs.
+
+  DATA:
+    lt_z_programs            TYPE STANDARD TABLE OF ts_z_programs,
+    lv_check_result          TYPE REF TO cl_ci_check_result,
+    lv_z_program_name        TYPE progname,
+    ls_list                  TYPE scit_alvlist,
+    lv_output_file_extension TYPE string VALUE '.txt'.
+
+  CLEAR:
+    lt_z_programs.
+
+  " Find a list of all Z programs in the system
+  SELECT name
+    FROM trdir
+    INTO TABLE lt_z_programs
+    WHERE name LIKE ic_kpi_code_inspector_programs AND subc = 1.
+  IF sy-subrc <> 0.
+    MESSAGE w000(zcfperfcheckmess).
+  ENDIF. " SY-SUBRC <> 0
+
+  " For each Z program, execute the cl_ci_check=>single method
+  LOOP AT lt_z_programs INTO lv_z_program_name.
+    TRY.
+        CALL METHOD cl_ci_check=>single
+          EXPORTING
+            p_variant_user = space
+            p_variant      = 'DEFAULT'
+            p_obj_type     = 'PROG'
+            p_obj_name     = lv_z_program_name
+          IMPORTING
+            p_result       = lv_check_result.
+      CATCH cx_ci_invalid_variant .
+      CATCH cx_ci_invalid_object .
+      CATCH cx_ci_check_error .
+    ENDTRY.
+    IF sy-subrc <> 0.
+      MESSAGE e001(zcfperfcheckmess).
+    ENDIF. " SY-SUBRC <> 0
+
+    lv_check_result->get_result( IMPORTING p_list = ls_list ).
+
+    APPEND LINES OF ls_list TO et_ci_final_list.
+
+    CASE ic_download_source_code.
+      WHEN 'yes'.
+        " Download source code for previously identified programs
+        PERFORM z_program_source_code_download
+          USING ic_output_download_path
+                lv_z_program_name
+                ic_output_file_extension
+                ic_output_file_name.
+    ENDCASE. " IC_DOWNLOAD_SOURCE_CODE
+
+  ENDLOOP. " LT_Z_PROGRAMS INTO LV_Z_PROGRAM_NAME
+
+ENDFORM. " KPI_CODE_INSPECTOR
+
+FORM kpi_bgd_jobs
+  USING    iv_kpi_bgd_job_limit_in_sec    TYPE i
+           ic_kpi_code_inspector_programs TYPE string
+           ic_field_separator             TYPE c
+  CHANGING et_tbtco_output                TYPE tt_output_format.
+
+  TYPES:
+    BEGIN OF lts_tbtco,
+      jobname        TYPE btcjob,
+      programname    TYPE btcprog,
+      jobcount       TYPE btcjobcnt,
+      btcsystem      TYPE btctgtsys,
+      strtdate       TYPE btcxdate,
+      strttime       TYPE btcxtime,
+      enddate        TYPE btcxdate,
+      endtime        TYPE btcxtime,
+      status         TYPE btcstatus,
+      runtimeseconds TYPE i,
+    END OF lts_tbtco.
+
+  TYPES:
+    ltt_tbtco TYPE STANDARD TABLE OF lts_tbtco.
+
+  DATA:
+    lv_output_format   TYPE string,
+    lv_runtime_seconds TYPE i,
+    lv_runtimeseconds  TYPE c LENGTH 10.
+
+  DATA:
+    lt_tbtco TYPE ltt_tbtco.
+
+  FIELD-SYMBOLS:
+    <ls_tbtco>  TYPE lts_tbtco.
+
+  " Place records into table et_tbtco
+  SELECT a~jobname, b~progname, a~jobcount, a~btcsystem, a~strtdate, a~strttime, a~enddate, a~endtime, a~status
+    FROM tbtco AS a
+    INNER JOIN tbtcp AS b
+    ON a~jobname = b~jobname
+    WHERE b~progname LIKE @ic_kpi_code_inspector_programs
+    INTO TABLE @lt_tbtco.
+  IF sy-subrc <> 0.
+    " Error handling - Add notification to ET_OUTPUT_FORMAT that no data selected from TBTCO
+*    MESSAGE w002(zcfperfcheckmess).
+  ENDIF.
+
+  " Sort table et_tbtco based on runtime in seconds descending
+  SORT lt_tbtco BY runtimeseconds DESCENDING.
+
+  " Filter rows that do not fulfill the threshold
+*  DELETE lt_tbtco WHERE runtimeseconds <= iv_kpi_bgd_job_limit_in_sec.
+
+  " Prepare the output to the CSV file
+  LOOP AT lt_tbtco ASSIGNING <ls_tbtco>.
+
+    CALL FUNCTION 'SALP_SM_CALC_TIME_DIFFERENCE'
+      EXPORTING
+        date_1  = <ls_tbtco>-strtdate
+        time_1  = <ls_tbtco>-strttime
+        date_2  = <ls_tbtco>-enddate
+        time_2  = <ls_tbtco>-endtime
+      IMPORTING
+        seconds = <ls_tbtco>-runtimeseconds.
+
+    lv_runtime_seconds = <ls_tbtco>-runtimeseconds.
+
+    CONCATENATE
+      <ls_tbtco>-jobname
+      <ls_tbtco>-programname
+      <ls_tbtco>-jobcount
+      <ls_tbtco>-btcsystem
+      <ls_tbtco>-strtdate
+      <ls_tbtco>-strttime
+      <ls_tbtco>-enddate
+      <ls_tbtco>-endtime
+      <ls_tbtco>-status
+      lv_runtimeseconds
+      INTO lv_output_format
+      SEPARATED BY ic_field_separator.
+
+    APPEND lv_output_format TO et_tbtco_output.
+
+  ENDLOOP.
+
+ENDFORM. " KPI_BGD_JOBS
+
+FORM kpi_st10
+  CHANGING et_st10_text_content TYPE tt_char1024.
+
+  DATA:
+  lt_st10_output TYPE STANDARD TABLE OF abaplist.
+
+  CALL FUNCTION 'LIST_FREE_MEMORY'.
+
+  SUBMIT rstabl11 EXPORTING LIST TO MEMORY AND RETURN.
+
+  CALL FUNCTION 'LIST_FROM_MEMORY'
+    TABLES
+      listobject = lt_st10_output
+    EXCEPTIONS
+      not_found  = 1
+      OTHERS     = 2.
+  IF sy-subrc <> 0.
+    MESSAGE e004(zcfperfcheckmess).
+  ENDIF. "SY-SUBRC <> 0
+
+  CALL FUNCTION 'LIST_TO_ASCI'
+    TABLES
+      listobject         = lt_st10_output
+      listasci           = et_st10_text_content
+    EXCEPTIONS
+      empty_list         = 1
+      list_index_invalid = 2
+      OTHERS             = 3.
+  IF sy-subrc <> 0.
+    MESSAGE e005(zcfperfcheckmess).
+  ENDIF. "SY-SUBRC <> 0
+
+  CALL FUNCTION 'LIST_FREE_MEMORY'.
+
+ENDFORM. " KPI_ST10
+
+FORM z_program_source_code_download
+  USING
+    ic_output_download_path       TYPE string
+    iv_z_program_name             TYPE progname
+    ic_output_file_extension      TYPE string
+    ic_output_file_name           TYPE string.
+
+  DATA:
+    lt_z_programs_source           TYPE TABLE OF string,
+    lv_kpi_code_inspector_file_nam TYPE string,
+    lv_z_program_name_for_output   TYPE string,
+    lv_output_file_name            TYPE string.
+
+  DATA:
+    lv_z_program_name_char TYPE c LENGTH 60.
+
+  DATA:
+    date_stamp TYPE c LENGTH 10.
+
+  " Prepare date and timestamp for file names
+  WRITE:
+    sy-datum TO date_stamp.
+
+  CLEAR lt_z_programs_source.
+
+  lv_z_program_name_char = iv_z_program_name.
+
+  " For each Z program identified, download the source code
+  READ REPORT lv_z_program_name_char INTO lt_z_programs_source.
+  IF sy-subrc <> 0.
+    MESSAGE e006(zcfperfcheckmess).
+    RETURN.
+  ENDIF. " SY-SUBRC <> 0
+
+  lv_z_program_name_for_output = lv_z_program_name_char.
+
+  " Prepare file name for z_program_source file download functionality
+  REPLACE ALL OCCURRENCES OF '.' IN date_stamp WITH '_'.
+  CONCATENATE ic_output_download_path ic_output_file_name date_stamp ic_output_file_extension INTO lv_output_file_name.
+
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename      = lv_output_file_name
+      no_auth_check = 'X'
+      append        = 'X'
+    TABLES
+      data_tab      = lt_z_programs_source.
+
+ENDFORM. " Z_PROGRAM_SOURCE_CODE_DOWNLOAD
+
+FORM output
+  USING
+    it_ci_final_list               TYPE scit_alvlist
+    it_tbtco_output                TYPE tt_output_format
+    ic_output_download_path        TYPE string
+    ic_output_file_extension       TYPE string
+    gt_st10_text_content           TYPE tt_char1024
+    ic_output_file_name            TYPE string.
+
+  " File download preparation for kpi_code_inspector
+  DATA:
+     date_stamp TYPE c LENGTH 10.
+
+  DATA:
+    lv_full_path TYPE string.
+
+    " Prepare date for file name
+    write:
+      sy-datum TO date_stamp.
+
+  " Code Inspector content download
+  REPLACE ALL OCCURRENCES OF '.' IN date_stamp WITH '_'.
+  CONCATENATE ic_output_download_path ic_output_file_name date_stamp ic_output_file_extension INTO lv_full_path.
+
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename      = lv_full_path
+      no_auth_check = 'X'
+      append        = 'X'
+    TABLES
+      data_tab      = it_ci_final_list.
+  
+  " BGD jobs download
+  REPLACE ALL OCCURRENCES OF '.' IN date_stamp WITH '_'.
+  CONCATENATE ic_output_download_path ic_output_file_name date_stamp ic_output_file_extension INTO lv_full_path.
+
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename      = lv_full_path
+      no_auth_check = 'X'
+      append        = 'X'
+    TABLES
+      data_tab      = it_tbtco_output.
+
+  " ST10 content download
+  REPLACE ALL OCCURRENCES OF '.' IN date_stamp WITH '_'.
+  CONCATENATE ic_output_download_path ic_output_file_name date_stamp ic_output_file_extension INTO lv_full_path.
+
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename      = lv_full_path
+      no_auth_check = 'X'
+      append        = 'X'
+    TABLES
+      data_tab      = gt_st10_text_content.
+
+ENDFORM. " OUTPUT
