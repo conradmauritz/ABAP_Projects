@@ -21,7 +21,9 @@ REPORT zcfperfcheck.
 
 
 " TO DO:
-" Implement error handling
+" Implement error handling and write errors and warnings into output file
+" Check tables used by Z programs and retrieve table statistics for those tables
+" Implement sections separators to make content splitting easier when analyzing
 
 
 *----------------------------------*
