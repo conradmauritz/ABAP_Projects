@@ -19,13 +19,6 @@
 
 REPORT zcfperfcheck.
 
-
-" TO DO:
-" Implement error handling and write errors and warnings into output file
-" Check tables used by Z programs and retrieve table statistics for those tables
-" Implement sections separators to make content splitting easier when analyzing
-
-
 *----------------------------------*
 " DECLERATION SECTION
 
@@ -33,7 +26,7 @@ REPORT zcfperfcheck.
 " CONSTANTS
 
 CONSTANTS:
-  gc_kpi_code_inspector_programs TYPE string  VALUE 'ZCF%',
+  gc_kpi_code_inspector_programs TYPE string  VALUE 'Z%', " Used to filter which Z programs get analyzed
   gc_kpi_bgd_job_limit_in_sec    TYPE i       VALUE 0, " Set to desired threshold in seconds
   gc_output_download_path        TYPE string  VALUE 'C:\zcfperfcheck_output\', " Specify download path
   gc_output_file_extension       TYPE string  VALUE '.txt',
@@ -56,14 +49,21 @@ DATA:
   gt_ci_final_list TYPE scit_alvlist.
 
 TYPES:
-  tt_st10_data  TYPE STANDARD TABLE OF abaplist.
-
-TYPES:
-  tt_char1024 TYPE STANDARD TABLE OF char1024.
+  tt_st10_data       TYPE STANDARD TABLE OF abaplist,
+  tt_char1024        TYPE STANDARD TABLE OF char1024,
+  tt_error_messages  TYPE STANDARD TABLE OF string,
+  tt_output_sections TYPE STANDARD TABLE OF string.
 
 DATA:
   gt_tbtco_output      TYPE tt_output_format,
   gt_st10_text_content TYPE tt_char1024.
+
+DATA:
+  gv_section_divider TYPE string,
+  gv_error_message   TYPE string.
+
+DATA:
+  gt_error_messages TYPE tt_error_messages.
 
 
 *----------------------------------*
@@ -80,7 +80,10 @@ PERFORM kpi_code_inspector
     gc_output_file_extension
     gc_output_file_name
   CHANGING
-    gt_ci_final_list.
+    gt_ci_final_list
+    gv_section_divider
+    gv_error_message
+    gt_error_messages.
 
 " Extract long running job runtime information
 " based on pre-determined parameters and
@@ -91,13 +94,17 @@ PERFORM kpi_bgd_jobs
     gc_kpi_code_inspector_programs
     gc_field_separator
   CHANGING
-    gt_tbtco_output.
+    gt_tbtco_output
+    gv_error_message
+    gt_error_messages.
 
 " Determine which tables have an abnormally high amount
 " of utilization and using SE11 functionality retrieve
 " a list of the programs that are using those tables
 PERFORM kpi_st10
-  CHANGING gt_st10_text_content.
+  CHANGING gt_st10_text_content
+           gv_error_message
+           gt_error_messages.
 
 " Place all of the retrieved content into a useful
 " structure so that the content can be easily analyzed
@@ -108,7 +115,10 @@ PERFORM output
     gc_output_download_path
     gc_output_file_extension
     gt_st10_text_content
-    gc_output_file_name.
+    gc_output_file_name
+    gv_section_divider
+    gv_error_message
+    gt_error_messages.
 
 
 *----------------------------------*
@@ -116,13 +126,16 @@ PERFORM output
 
 FORM kpi_code_inspector
   USING
-    ic_kpi_code_inspector_programs TYPE string
-    ic_output_download_path        TYPE string
-    ic_download_source_code        TYPE string
-    ic_output_file_extension       TYPE string
-    ic_output_file_name            TYPE string
-    CHANGING
-    et_ci_final_list               TYPE scit_alvlist.
+    iv_kpi_code_inspector_programs TYPE string
+    iv_output_download_path        TYPE string
+    iv_download_source_code        TYPE string
+    iv_output_file_extension       TYPE string
+    iv_output_file_name            TYPE string
+  CHANGING
+    et_ci_final_list               TYPE scit_alvlist
+    ev_section_divider             TYPE string
+    ev_error_message               TYPE string
+    et_error_messages              TYPE tt_error_messages.
 
   TYPES:
     BEGIN OF ts_z_programs,
@@ -143,9 +156,17 @@ FORM kpi_code_inspector
   SELECT name
     FROM trdir
     INTO TABLE lt_z_programs
-    WHERE name LIKE ic_kpi_code_inspector_programs AND subc = 1.
+    WHERE name LIKE iv_kpi_code_inspector_programs AND subc = 1.
   IF sy-subrc <> 0.
-    MESSAGE w000(zcfperfcheckmess).
+
+    ev_error_message = 'Error 1: No records selected from table trdir'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
+    RETURN.
+
   ENDIF. " SY-SUBRC <> 0
 
   " For each Z program, execute the cl_ci_check=>single method
@@ -164,21 +185,30 @@ FORM kpi_code_inspector
       CATCH cx_ci_check_error .
     ENDTRY.
     IF sy-subrc <> 0.
-      MESSAGE e001(zcfperfcheckmess).
+
+      CONCATENATE 'Error 2: The SAP Code Inspector Check failed for program: ' lv_z_program_name
+        INTO ev_error_message.
+
+      PERFORM collect_error_messages
+        USING ev_error_message
+        CHANGING et_error_messages.
+
     ENDIF. " SY-SUBRC <> 0
 
     lv_check_result->get_result( IMPORTING p_list = ls_list ).
 
     APPEND LINES OF ls_list TO et_ci_final_list.
 
-    CASE ic_download_source_code.
+    CASE iv_download_source_code.
       WHEN 'yes'.
         " Download source code for previously identified programs
         PERFORM z_program_source_code_download
-          USING ic_output_download_path
+          USING iv_output_download_path
                 lv_z_program_name
-                ic_output_file_extension
-                ic_output_file_name.
+                iv_output_file_extension
+                iv_output_file_name
+          CHANGING ev_error_message
+                   et_error_messages.
     ENDCASE. " IC_DOWNLOAD_SOURCE_CODE
 
   ENDLOOP. " LT_Z_PROGRAMS INTO LV_Z_PROGRAM_NAME
@@ -187,9 +217,11 @@ ENDFORM. " KPI_CODE_INSPECTOR
 
 FORM kpi_bgd_jobs
   USING    iv_kpi_bgd_job_limit_in_sec    TYPE i
-           ic_kpi_code_inspector_programs TYPE string
-           ic_field_separator             TYPE c
-  CHANGING et_tbtco_output                TYPE tt_output_format.
+           iv_kpi_code_inspector_programs TYPE string
+           iv_field_separator             TYPE c
+  CHANGING et_tbtco_output                TYPE tt_output_format
+           ev_error_message               TYPE string
+           et_error_messages              TYPE tt_error_messages.
 
   TYPES:
     BEGIN OF lts_tbtco,
@@ -224,18 +256,25 @@ FORM kpi_bgd_jobs
     FROM tbtco AS a
     INNER JOIN tbtcp AS b
     ON a~jobname = b~jobname
-    WHERE b~progname LIKE @ic_kpi_code_inspector_programs
+    WHERE b~progname LIKE @iv_kpi_code_inspector_programs
     INTO TABLE @lt_tbtco.
   IF sy-subrc <> 0.
-    " Error handling - Add notification to ET_OUTPUT_FORMAT that no data selected from TBTCO
-*    MESSAGE w002(zcfperfcheckmess).
+
+    ev_error_message = 'Error 3: No data selected from TBTCO'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
+    RETURN.
+
   ENDIF.
 
   " Sort table et_tbtco based on runtime in seconds descending
   SORT lt_tbtco BY runtimeseconds DESCENDING.
 
   " Filter rows that do not fulfill the threshold
-*  DELETE lt_tbtco WHERE runtimeseconds <= iv_kpi_bgd_job_limit_in_sec.
+  DELETE lt_tbtco WHERE runtimeseconds <= iv_kpi_bgd_job_limit_in_sec.
 
   " Prepare the output to the CSV file
   LOOP AT lt_tbtco ASSIGNING <ls_tbtco>.
@@ -263,7 +302,7 @@ FORM kpi_bgd_jobs
       <ls_tbtco>-status
       lv_runtimeseconds
       INTO lv_output_format
-      SEPARATED BY ic_field_separator.
+      SEPARATED BY iv_field_separator.
 
     APPEND lv_output_format TO et_tbtco_output.
 
@@ -272,7 +311,9 @@ FORM kpi_bgd_jobs
 ENDFORM. " KPI_BGD_JOBS
 
 FORM kpi_st10
-  CHANGING et_st10_text_content TYPE tt_char1024.
+  CHANGING et_st10_text_content TYPE tt_char1024
+           ev_error_message     TYPE string
+           et_error_messages    TYPE tt_error_messages.
 
   DATA:
   lt_st10_output TYPE STANDARD TABLE OF abaplist.
@@ -288,19 +329,29 @@ FORM kpi_st10
       not_found  = 1
       OTHERS     = 2.
   IF sy-subrc <> 0.
-    MESSAGE e004(zcfperfcheckmess).
+
+    ev_error_message = 'Error 4: Nothing in the LIST content in memory'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
+    RETURN.
+
   ENDIF. "SY-SUBRC <> 0
 
   CALL FUNCTION 'LIST_TO_ASCI'
     TABLES
-      listobject         = lt_st10_output
-      listasci           = et_st10_text_content
-    EXCEPTIONS
-      empty_list         = 1
-      list_index_invalid = 2
-      OTHERS             = 3.
+      listobject = lt_st10_output
+      listasci   = et_st10_text_content.
   IF sy-subrc <> 0.
-    MESSAGE e005(zcfperfcheckmess).
+
+    ev_error_message = 'Error 5: Unable to convert the ST10 content from LIST to ASCII'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
   ENDIF. "SY-SUBRC <> 0
 
   CALL FUNCTION 'LIST_FREE_MEMORY'.
@@ -309,26 +360,32 @@ ENDFORM. " KPI_ST10
 
 FORM z_program_source_code_download
   USING
-    ic_output_download_path       TYPE string
-    iv_z_program_name             TYPE progname
-    ic_output_file_extension      TYPE string
-    ic_output_file_name           TYPE string.
+    iv_output_download_path  TYPE string
+    iv_z_program_name        TYPE progname
+    iv_output_file_extension TYPE string
+    iv_output_file_name      TYPE string
+  CHANGING
+    ev_error_message         TYPE string
+    et_error_messages        TYPE tt_error_messages.
 
   DATA:
     lt_z_programs_source           TYPE TABLE OF string,
     lv_kpi_code_inspector_file_nam TYPE string,
-    lv_z_program_name_for_output   TYPE string,
+    lv_full_path                   TYPE string,
     lv_output_file_name            TYPE string.
 
   DATA:
     lv_z_program_name_char TYPE c LENGTH 60.
 
   DATA:
-    date_stamp TYPE c LENGTH 10.
+    lt_output_sections TYPE STANDARD TABLE OF string.
+
+  DATA:
+    lv_date_stamp TYPE c LENGTH 10.
 
   " Prepare date and timestamp for file names
   WRITE:
-    sy-datum TO date_stamp.
+    sy-datum TO lv_date_stamp.
 
   CLEAR lt_z_programs_source.
 
@@ -337,50 +394,84 @@ FORM z_program_source_code_download
   " For each Z program identified, download the source code
   READ REPORT lv_z_program_name_char INTO lt_z_programs_source.
   IF sy-subrc <> 0.
-    MESSAGE e006(zcfperfcheckmess).
+    " lv_z_program_name_char is empty
+
+    ev_error_message = 'Error 6: lv_z_program_name_char is empty'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
     RETURN.
   ENDIF. " SY-SUBRC <> 0
 
-  lv_z_program_name_for_output = lv_z_program_name_char.
-
   " Prepare file name for z_program_source file download functionality
-  REPLACE ALL OCCURRENCES OF '.' IN date_stamp WITH '_'.
-  CONCATENATE ic_output_download_path ic_output_file_name date_stamp ic_output_file_extension INTO lv_output_file_name.
+  REPLACE ALL OCCURRENCES OF '.' IN lv_date_stamp WITH '_'.
+  CONCATENATE iv_output_download_path iv_output_file_name lv_date_stamp iv_output_file_extension INTO lv_full_path.
 
+  " Download Z programs source code
   CALL FUNCTION 'GUI_DOWNLOAD'
     EXPORTING
-      filename      = lv_output_file_name
+      filename      = lv_full_path
       no_auth_check = 'X'
-      append        = 'X'
+*     append        = 'X'
     TABLES
       data_tab      = lt_z_programs_source.
+  IF sy-subrc <> 0.
+
+    ev_error_message = 'Error 7: Unable to download the collected Z program source code'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
+  ENDIF. "SY-SUBRC <> 0
 
 ENDFORM. " Z_PROGRAM_SOURCE_CODE_DOWNLOAD
 
 FORM output
   USING
-    it_ci_final_list               TYPE scit_alvlist
-    it_tbtco_output                TYPE tt_output_format
-    ic_output_download_path        TYPE string
-    ic_output_file_extension       TYPE string
-    gt_st10_text_content           TYPE tt_char1024
-    ic_output_file_name            TYPE string.
+    it_ci_final_list         TYPE scit_alvlist
+    it_tbtco_output          TYPE tt_output_format
+    iv_output_download_path  TYPE string
+    iv_output_file_extension TYPE string
+    it_st10_text_content     TYPE tt_char1024
+    iv_output_file_name      TYPE string
+    iv_section_divider       TYPE string
+  CHANGING
+    ev_error_message         TYPE string
+    et_error_messages        TYPE tt_error_messages.
 
-  " File download preparation for kpi_code_inspector
+
   DATA:
-     date_stamp TYPE c LENGTH 10.
+     lv_date_stamp TYPE c LENGTH 10.
 
   DATA:
     lv_full_path TYPE string.
 
-    " Prepare date for file name
-    write:
-      sy-datum TO date_stamp.
+  DATA:
+    lt_output_sections TYPE tt_output_sections.
+
+  " Prepare date for file name
+  WRITE:
+    sy-datum TO lv_date_stamp.
+
+  " Prepare filename and file path
+  REPLACE ALL OCCURRENCES OF '.' IN lv_date_stamp WITH '_'.
+  CONCATENATE iv_output_download_path iv_output_file_name lv_date_stamp iv_output_file_extension INTO lv_full_path.
+
+  " Add START_CI_SECTION section to output file
+  PERFORM add_output_section
+    USING 'START_CI_SECTION'
+    CHANGING lt_output_sections.
+
+  PERFORM sections_write_to_file
+    USING lv_full_path
+          lt_output_sections
+          ev_error_message
+    CHANGING et_error_messages.
 
   " Code Inspector content download
-  REPLACE ALL OCCURRENCES OF '.' IN date_stamp WITH '_'.
-  CONCATENATE ic_output_download_path ic_output_file_name date_stamp ic_output_file_extension INTO lv_full_path.
-
   CALL FUNCTION 'GUI_DOWNLOAD'
     EXPORTING
       filename      = lv_full_path
@@ -388,11 +479,40 @@ FORM output
       append        = 'X'
     TABLES
       data_tab      = it_ci_final_list.
-  
-  " BGD jobs download
-  REPLACE ALL OCCURRENCES OF '.' IN date_stamp WITH '_'.
-  CONCATENATE ic_output_download_path ic_output_file_name date_stamp ic_output_file_extension INTO lv_full_path.
+  IF sy-subrc <> 0.
+    " Unable to download the code inspector content
 
+    ev_error_message = 'Error 8: Unable to download the code inspector content'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
+  ENDIF. "SY-SUBRC <> 0
+
+  " Add END_CI_SECTION section to output file
+  PERFORM add_output_section
+    USING 'END_CI_SECTION'
+    CHANGING lt_output_sections.
+
+  PERFORM sections_write_to_file
+      USING lv_full_path
+            lt_output_sections
+            ev_error_message
+      CHANGING et_error_messages.
+
+  " Add START_BGD_SECTION section to output file
+  PERFORM add_output_section
+    USING 'START_BGD_SECTION'
+    CHANGING lt_output_sections.
+
+  PERFORM sections_write_to_file
+    USING lv_full_path
+          lt_output_sections
+          ev_error_message
+    CHANGING et_error_messages.
+
+  " BGD jobs download
   CALL FUNCTION 'GUI_DOWNLOAD'
     EXPORTING
       filename      = lv_full_path
@@ -400,10 +520,77 @@ FORM output
       append        = 'X'
     TABLES
       data_tab      = it_tbtco_output.
+  IF sy-subrc <> 0.
+
+    ev_error_message = 'Error 9: Unable to download the backgroun jobs content'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
+  ENDIF. "SY-SUBRC <> 0
+
+  " Add END_BGD_SECTION section to output file
+  PERFORM add_output_section
+  USING 'END_BGD_SECTION'
+  CHANGING lt_output_sections.
+
+  PERFORM sections_write_to_file
+   USING lv_full_path
+         lt_output_sections
+         ev_error_message
+   CHANGING et_error_messages.
+
+  " Add START_ST10_SECTION section to output file
+  PERFORM add_output_section
+    USING 'START_ST10_SECTION'
+    CHANGING lt_output_sections.
+
+  PERFORM sections_write_to_file
+    USING lv_full_path
+          lt_output_sections
+          ev_error_message
+    CHANGING et_error_messages.
 
   " ST10 content download
-  REPLACE ALL OCCURRENCES OF '.' IN date_stamp WITH '_'.
-  CONCATENATE ic_output_download_path ic_output_file_name date_stamp ic_output_file_extension INTO lv_full_path.
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename      = lv_full_path
+      no_auth_check = 'X'
+      append        = 'X'
+    TABLES
+      data_tab      = it_st10_text_content.
+  IF sy-subrc <> 0.
+
+    ev_error_message = 'Error 10: Unable to download the ST10 content'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
+  ENDIF. "SY-SUBRC <> 0
+
+  " Add END_ST10_SECTION section to output file
+  PERFORM add_output_section
+   USING 'END_ST10_SECTION'
+   CHANGING lt_output_sections.
+
+  PERFORM sections_write_to_file
+     USING lv_full_path
+           lt_output_sections
+           ev_error_message
+     CHANGING et_error_messages.
+
+  " Add START_ERROR_SECTION section to output file
+  PERFORM add_output_section
+    USING 'START_ERROR_SECTION'
+    CHANGING lt_output_sections.
+
+  PERFORM sections_write_to_file
+    USING lv_full_path
+          lt_output_sections
+          ev_error_message
+    CHANGING et_error_messages.
 
   CALL FUNCTION 'GUI_DOWNLOAD'
     EXPORTING
@@ -411,6 +598,74 @@ FORM output
       no_auth_check = 'X'
       append        = 'X'
     TABLES
-      data_tab      = gt_st10_text_content.
+      data_tab      = et_error_messages.
+
+  " Add END_ERROR_SECTION section to output file
+  PERFORM add_output_section
+    USING 'END_ERROR_SECTION'
+    CHANGING lt_output_sections.
+
+  PERFORM sections_write_to_file
+    USING lv_full_path
+          lt_output_sections
+          ev_error_message
+    CHANGING et_error_messages.
 
 ENDFORM. " OUTPUT
+
+FORM add_output_section
+  USING
+    iv_section_text   TYPE string
+  CHANGING
+    et_output_section TYPE tt_output_format.
+
+  DATA:
+    lv_section_text   TYPE string,
+    lv_add_empty_line TYPE string.
+
+  CLEAR et_output_section.
+
+  APPEND lv_add_empty_line TO et_output_section.
+
+  CONCATENATE '* ------ ' iv_section_text ' ------ *'
+    INTO lv_section_text.
+  APPEND lv_section_text TO et_output_section.
+
+  APPEND lv_add_empty_line TO et_output_section.
+
+ENDFORM.
+
+FORM sections_write_to_file
+  USING iv_full_path       TYPE string
+        it_output_sections TYPE tt_output_sections
+        ev_error_message   TYPE string
+        et_error_messages  TYPE tt_error_messages.
+
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename      = iv_full_path
+      no_auth_check = 'X'
+      append        = 'X'
+    TABLES
+      data_tab      = it_output_sections.
+  IF sy-subrc <> 0.
+
+    ev_error_message = 'Error 11: Unable to download the output section indicator content'.
+
+    PERFORM collect_error_messages
+      USING ev_error_message
+      CHANGING et_error_messages.
+
+  ENDIF. "SY-SUBRC <> 0
+
+ENDFORM.
+
+FORM collect_error_messages
+  USING
+    ev_error_message  TYPE string
+  CHANGING
+    et_error_messages TYPE  tt_error_messages.
+
+  APPEND ev_error_message TO et_error_messages.
+
+ENDFORM.
