@@ -19,6 +19,11 @@
 
 REPORT zcfperfcheck.
 
+
+" TO DO:
+" Implement error handling
+
+
 *----------------------------------*
 " DECLERATION SECTION
 
@@ -419,7 +424,7 @@ FORM z_program_source_code_download
       data_tab      = lt_z_programs_source.
   IF sy-subrc <> 0.
 
-    ev_error_message = 'Error 7: Unable to download the collected Z program source code'.
+   CONCATENATE 'Error 7: Unable to download the collected Z program source code for:' iv_z_program_name INTO ev_error_message.
 
     PERFORM collect_error_messages
       USING ev_error_message
