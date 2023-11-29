@@ -17,7 +17,7 @@
 *&
 *& More Information:
 *&
-*&
+*&  Implementation guide: https://github.com/conradmauritz/ABAP_Projects/blob/main/ZCFPERFCHECK_V1/ZCFPERFCHECK%20Implementation%20Guide.docx
 *&
 *&
 *&---------------------------------------------------------------------*
@@ -231,8 +231,8 @@ FORM kpi_code_inspector
        INTO ev_error_message.
 
         PERFORM collect_error_messages
-       USING ev_error_message
-       CHANGING et_error_messages.
+          USING ev_error_message
+          CHANGING et_error_messages.
 
       CATCH cx_ci_invalid_object.
 
@@ -240,8 +240,8 @@ FORM kpi_code_inspector
            INTO ev_error_message.
 
         PERFORM collect_error_messages
-     USING ev_error_message
-     CHANGING et_error_messages.
+          USING ev_error_message
+          CHANGING et_error_messages.
 
       CATCH cx_ci_check_error.
 
@@ -249,8 +249,8 @@ FORM kpi_code_inspector
            INTO ev_error_message.
 
         PERFORM collect_error_messages
-       USING ev_error_message
-       CHANGING et_error_messages.
+          USING ev_error_message
+          CHANGING et_error_messages.
     ENDTRY.
 
     lo_check_result->get_result( IMPORTING p_list = lt_list ).
@@ -316,6 +316,8 @@ FORM kpi_bgd_jobs
 
   FIELD-SYMBOLS:
     <ls_tbtco>         TYPE lts_tbtco.
+
+  CLEAR: ev_error_message, et_tbtco_output, et_error_messages.
 
   " Place records into table et_tbtco
   SELECT a~jobname, b~progname, a~jobcount, a~btcsystem, a~strtdate, a~strttime, a~enddate, a~endtime, a~status
@@ -451,6 +453,8 @@ FORM z_program_source_code_download
   DATA:
     lv_date_stamp                  TYPE c LENGTH 10.
 
+  CLEAR: ev_error_message, et_error_messages.
+
   " Prepare date and timestamp for file names
   WRITE: sy-datum TO lv_date_stamp.
 
@@ -581,8 +585,8 @@ FORM output
 
   " Add END_BGD_SECTION section divider to output file
   PERFORM add_output_section_divider
-  USING 'END_BGD_SECTION'
-  CHANGING lt_output_sections.
+    USING 'END_BGD_SECTION'
+    CHANGING lt_output_sections.
 
   PERFORM sections_divider_write_to_file
    USING lv_full_path
@@ -614,7 +618,6 @@ FORM output
       CHANGING it_error_messages.
   ENDIF. "SY-SUBRC <> 0
 
-
   " Add END_ERROR_SECTION section divider to output file
   PERFORM add_output_section_divider
     USING 'END_zprogram_tables_SECTION'
@@ -645,7 +648,7 @@ FORM output
       append        = 'X'
     TABLES
       data_tab      = it_zprograms_statistics.
-   IF sy-subrc <> 0.
+  IF sy-subrc <> 0.
     PERFORM collect_error_messages
       USING 'Error 13: Unable to download the ST10 content'
       CHANGING it_error_messages.
