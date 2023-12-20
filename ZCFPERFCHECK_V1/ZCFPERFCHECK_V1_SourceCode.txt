@@ -320,7 +320,7 @@ FORM kpi_bgd_jobs
   CLEAR: ev_error_message, et_tbtco_output, et_error_messages.
 
   " Place records into table et_tbtco
-  SELECT a~jobname, b~progname, a~jobcount, a~btcsystem, a~strtdate, a~strttime, a~enddate, a~endtime, a~status
+  SELECT DISTINCT a~jobname, b~progname, a~jobcount, a~btcsystem, a~strtdate, a~strttime, a~enddate, a~endtime, a~status
     FROM tbtco AS a
     INNER JOIN tbtcp AS b
       ON a~jobname = b~jobname
@@ -332,12 +332,6 @@ FORM kpi_bgd_jobs
       CHANGING et_error_messages.
     EXIT. " FORM
   ENDIF.
-
-  " Sort table et_tbtco based on runtime in seconds descending
-  SORT lt_tbtco BY runtimeseconds DESCENDING.
-
-  " Filter rows that do not fulfill the threshold
-  DELETE lt_tbtco WHERE runtimeseconds <= iv_kpi_bgd_job_runtime_in_sec.
 
   " Prepare the output to the CSV file
   LOOP AT lt_tbtco ASSIGNING <ls_tbtco>.
@@ -353,7 +347,17 @@ FORM kpi_bgd_jobs
       IMPORTING
         seconds = <ls_tbtco>-runtimeseconds.
 
-    lv_runtime_seconds = <ls_tbtco>-runtimeseconds.
+  ENDLOOP. " LOOP AT LT_TBTCO ASSIGNING <LS_TBTCO>
+
+  " Sort table et_tbtco based on runtime in seconds descending
+  SORT lt_tbtco BY runtimeseconds DESCENDING.
+
+  " Filter rows that do not fulfill the threshold
+  DELETE lt_tbtco WHERE runtimeseconds <= iv_kpi_bgd_job_runtime_in_sec.
+
+  LOOP AT lt_tbtco ASSIGNING <ls_tbtco>.
+
+    lv_runtimeseconds = <ls_tbtco>-runtimeseconds.
 
     " Place the retrieved background job information into et_tbtco
     " in preparation for the content download
@@ -370,9 +374,10 @@ FORM kpi_bgd_jobs
       lv_runtimeseconds
       INTO lv_output_format
       SEPARATED BY iv_field_separator.
+
     APPEND lv_output_format TO et_tbtco_output.
 
-  ENDLOOP.
+  ENDLOOP. " LOOP AT LT_TBTCO ASSIGNING <LS_TBTCO>
 
 ENDFORM. " KPI_BGD_JOBS
 
