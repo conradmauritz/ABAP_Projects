@@ -3,8 +3,14 @@
 *&
 *&---------------------------------------------------------------------*
 *& Description:
-*&   Collects performance related data for further analysis
-*&
+*& 
+*& The purpose of ZCFPERFCHECK_V2 is to extract data from an AS ABAP system that 
+*& can be used for further analysis to determine:
+*& 
+*& 1.If there are Z programs running longer than the acceptable maximum runtime
+*& 2.Based on the findings, what could be causing the Z programs to run for longer than necessary
+*& 3.The most important adjustments to make to the Z programs identified, that would provide a 
+*&   reduction in system resource utilization and the biggest improvement in runtimes.
 *&
 *& Technical description:
 *&
@@ -24,8 +30,8 @@
 *&
 *& More Information:
 *&
-*& Implementation guide URL -
-*&
+*& Implementation guide URL - 
+*&  https://github.com/conradmauritz/ABAP_Projects/blob/main/ZCFPERFCHECK_V2/ZCFPERFCHECK%20Implementation%20Guide.docx
 *&
 *&---------------------------------------------------------------------*
 *& Change log:
