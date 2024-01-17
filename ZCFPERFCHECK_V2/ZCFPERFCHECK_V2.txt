@@ -10,7 +10,7 @@
 *& 1.If there are Z programs running longer than the acceptable maximum runtime
 *& 2.Based on the findings, what could be causing the Z programs to run for longer than necessary
 *& 3.The most important adjustments to make to the Z programs identified, that would provide a 
-*&   reduction in system resource utilization and the biggest improvement in runtimes.
+*&   reduction in system resource utilization and the biggest improvement in runtime.
 *&
 *& Technical description:
 *&
