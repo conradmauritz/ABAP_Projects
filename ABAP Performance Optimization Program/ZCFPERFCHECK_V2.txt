@@ -31,7 +31,7 @@
 *& More Information:
 *&
 *& Implementation guide URL - 
-*&  https://github.com/conradmauritz/ABAP_Projects/blob/main/ZCFPERFCHECK_V2/ZCFPERFCHECK_V2%20Implementation%20Guide.docx
+*&  https://github.com/conradmauritz/ABAP_Projects/blob/main/ABAP%20Performance%20Optimization%20Tool/ZCFPERFCHECK_V2%20Implementation%20Guide.docx
 *&
 *&---------------------------------------------------------------------*
 *& Change log:
